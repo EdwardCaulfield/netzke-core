@@ -8,7 +8,7 @@ class NetzkeController < ApplicationController
       params['_json'].each do |batch|
         result += result.blank? ? '[' : ', '
         begin
-          result += invoke_endpoint(batch[:act], batch[:method].underscore, batch[:data].first, batch[:tid])
+          result += invoke_endpoint(batch[:act], batch[:method].underscore, batch[:data] && batch[:data].first, batch[:tid])
         rescue Exception  => e
           Rails.logger.error "!!! Netzke: Error invoking endpoint: #{batch[:act]} #{batch[:method].underscore} #{batch[:data].inspect} #{batch[:tid]}\n"
           Rails.logger.error e.message
