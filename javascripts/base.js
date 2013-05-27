@@ -113,6 +113,7 @@ Ext.define("Netzke.classes.Core.Mixin", {
         }else{
           a= args;
         }
+        args = a;
 
         if (Ext.isFunction(this[instr])) {
           // Executing the method.
