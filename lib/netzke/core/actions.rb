@@ -14,11 +14,18 @@ module Netzke::Core
   #
   # All config settings for an action are optional. When omitted, the locale files will be consulted first (see "I18n of actions"), falling back to the defaults.
   #
+  # [+text+]
+  #   The text of the action (defaults to humanized action name)
   # [+icon+]
   #   Can be set to either a String (which will be interpreted as a full URI to the icon file), or as a Symbol, which will be expanded to +Netzke::Core.icons_uri+ + "/(icon).png". Defaults to nil (no icon)
+  # [+tooltip+]
+  #   The tooltip of the action (defaults to humanized action name)
+  # [+disabled+]
+  #   When set to +true+, renders this action as disabled
   # [+handler+]
   #   A symbol that represents the JavaScript public method (snake-case), which will be called in the scope of the component instance. Defaults to +on_(action_name)+, which on JavaScript side will result in a call to +on(CamelCaseActionName)+
-  # +text+ and +tooltip+ default to "Humanized action name"
+  # [+excluded+]
+  #   When set to true, gets the action excluded from menus and toolbars
   #
   # When no block is given, the defaults will be used:
   #
@@ -85,12 +92,16 @@ module Netzke::Core
   #         items: [:do_something]
   #       }]
   #     end
+  #
+  # == Interfering with action events in client class
+  #
+  # For each action Netzke creates an event on the level of the parent component following the convention '<action_name>click'. The handler receives the component itself as a parameter. If the handler returns +false+, the action event is not further propagated.
   module Actions
     extend ActiveSupport::Concern
 
     included do
       # Declares Base.action, for declaring actions, and Base#actions, which returns a [Hash] of all action configs by name
-      declare_dsl_for :actions
+      declare_dsl_for :actions, config_class: Netzke::Core::ActionConfig
     end
 
     module ClassMethods

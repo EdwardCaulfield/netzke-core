@@ -1,8 +1,24 @@
-# v0.8.4 - WIP
+# v0.9.0 - WIP
+* TODO Rails 4
+* TODO Ext JS 4.2
+* TODO Ext JS Neptune scheme is default
+* changes
+  * TODO `js_configure`: c.mixin and c.include without params pickup "mixins/*.js" and "includes/*.js" respectively
+  * TODO new convention for endpoint naming: an endpoint declared with `endpoint :do_something` will be callable from
+  the client as `this.serverDoSomething`
+  * TODO netzkeFeedback removed in favor of netzkeInfo and netzkeError
+  * TODO Grid config options like `enable_advanced_search` loose their `enable_` prefix
+
+# v0.8.4 - 2013-05-22
 * bug fix
-  * re-enable session expiration detection
+  * Re-enable session expiration detection
+  * Do not crash on a rare situation when an endpoint is being called on an non-existing child component
 * improvements
-  * add `serverexception` event on `Netzke.directProvider`, subscribe to it to handle server exceptions
+  * Add `serverexception` event on `Netzke.directProvider`, subscribe to it to handle server exceptions
+  * Endpoint calls will now pass Ext.direct.Exception to the provided callback function in case of server exception
+  * A component will clean-up the loading mask when a server exception occurs during dynamic component loading
+  * `netzkeFeedback` now shows multiple messages in a single slide banner
+  * Implement multi-instance child component loading with different configuration (see MultiInstanceLoading in the test app)
 
 # v0.8.3 - 2013-03-22
 * support Rails 3.2.13

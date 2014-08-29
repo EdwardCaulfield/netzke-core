@@ -81,26 +81,31 @@ module Netzke::Core
 
     included do
       # Declares Base.component, for declaring child componets, and Base#components, which returns a [Hash] of all component configs by name
-      declare_dsl_for :components
+      declare_dsl_for :components, config_class: Netzke::Core::ComponentConfig
 
       # Loads a component on browser's request. Every Netzke component gets this endpoint.
-      # <tt>params</tt> should contain:
-      # * <tt>:cache</tt> - an array of component classes cached at the browser
-      # * <tt>:id</tt> - reference to the component
-      # * <tt>:container</tt> - Ext id of the container where in which the component will be rendered
+      # +params+ should contain:
+      #   [cache] an array of component classes cached at the browser
+      #   [name] name of the child component to be loaded
+      #   [index] clone index of the loaded component
       endpoint :deliver_component do |params, this|
         cache = params[:cache].split(",") # array of cached xtypes
         component_name = params[:name].underscore.to_sym
-        component = components[component_name] && !components[component_name][:excluded] && component_instance(component_name)
 
-        if component
-          js, css = component.js_missing_code(cache), component.css_missing_code(cache)
+        item_id = "#{component_name}#{params[:index]}"
+
+        cmp_instance = components[component_name] &&
+          !components[component_name][:excluded] &&
+          component_instance(component_name, {item_id: item_id, client_config: params[:client_config]})
+
+        if cmp_instance
+          js, css = cmp_instance.js_missing_code(cache), cmp_instance.css_missing_code(cache)
           this.netzke_eval_js(js) if js.present?
           this.netzke_eval_css(css) if css.present?
 
-          this.netzke_component_delivered(component.js_config);
+          this.netzke_component_delivered(cmp_instance.js_config);
         else
-          this.netzke_component_delivery_failed(component_name: component_name, msg: "Couldn't load component '#{component_name}'")
+          this.netzke_component_delivery_failed(item_id: item_id, msg: "Couldn't load component '#{item_id}'")
         end
       end
 
@@ -116,20 +121,14 @@ module Netzke::Core
       @components_in_config || (normalize_config || true) && @components_in_config
     end
 
-    # Called when the method_missing tries to processes a non-existing component. Override when needed.
-    def component_missing(aggr)
-      flash :error => "Unknown component #{aggr} for #{name}"
-      {:feedback => @flash}.netzke_jsonify.to_json
-    end
-
     # Recursively instantiates a child component based on its "path": e.g. if we have component :component1 which in its turn has component :component2, the path to the latter would be "component1__component2"
     # @param name [Symbol] component name
-    def component_instance(name)
-      @_component_instance ||= {} # memoization
-      @_component_instance[name] ||= name.to_s.split('__').inject(self) do |out, cmp_name|
+    def component_instance(name, strong_config = {})
+      name.to_s.split('__').inject(self) do |out, cmp_name|
         cmp_config = out.components[cmp_name.to_sym]
-        raise ArgumentError, "No component '#{cmp_name}' defined for '#{out.js_id}'" if cmp_config.nil? || cmp_config[:excluded]
+        raise ArgumentError, "No component '#{cmp_name}' defined for '#{out.path}'" if cmp_config.nil? || cmp_config[:excluded]
         cmp_config[:name] = cmp_name
+        cmp_config.merge!(strong_config)
         cmp_config[:klass].new(cmp_config, out)
       end
     end
@@ -144,22 +143,6 @@ module Netzke::Core
 
       res += self.class.netzke_ancestors
       res.uniq
-    end
-
-    # JS id of a component in the hierarchy, based on passed reference that follows the double-underscore notation. Referring to "parent" is allowed. If going to far up the hierarchy will result in <tt>nil</tt>, while referring to a non-existent component will simply provide an erroneous ID.
-    # For example:
-    # <tt>parent__parent__child__subchild</tt> will traverse the hierarchy 2 levels up, then going down to "child", and further to "subchild". If such a component exists in the hierarchy, its global id will be returned, otherwise <tt>nil</tt> will be returned.
-    # @param ref [Symbol] reference to a child component
-    # @return [String] JS id
-    def js_id_by_reference(ref)
-      ref = ref.to_s
-      return parent && parent.js_id if ref == "parent"
-      substr = ref.sub(/^parent__/, "")
-      if substr == ref # there's no "parent__" in the beginning
-        return js_id + "__" + ref
-      else
-        return parent.js_id_by_reference(substr)
-      end
     end
 
     def extend_item(item)

@@ -2,6 +2,42 @@ module Netzke
   module Railz
     # Before each request, Netzke::Base.controller and Netzke::Base.session are set, to be accessible from components.
     module ControllerExtensions
+      class DirectRequest
+        def initialize(params)
+          @params = params
+        end
+
+        def cmp_path
+          @params[:path]
+        end
+
+        def endpoint
+          @params[:endpoint].underscore
+        end
+
+        def args
+          # for backward compatibility, fall back to old data structure (with the endpoint params being in the root of
+          # 'data')
+          remoting_args["configs"] ? remoting_args["args"] : remoting_args
+        end
+
+        def client_configs
+          # if no configs are provided, the behavior is the old one, and thus all instances the same child component
+          # will be treated as one
+          remoting_args["configs"] || []
+        end
+
+        def tid
+          @params[:tid]
+        end
+
+      private
+
+        def remoting_args
+          @_remoting_args ||= @params[:data].first
+        end
+      end
+
       extend ActiveSupport::Concern
 
       included do
@@ -20,11 +56,12 @@ module Netzke
         if params['_json'] # this is a batched request
           response = []
           params['_json'].each do |batch|
-            # response << invoke_endpoint(batch)
-            response << direct_response(batch, invoke_endpoint(batch))
+            direct_request = DirectRequest.new(batch)
+            response << direct_response(direct_request, invoke_endpoint(direct_request))
           end
         else # this is a single request
-          response = direct_response(params, invoke_endpoint(params))
+          direct_request = DirectRequest.new(params)
+          response = direct_response(direct_request, invoke_endpoint(direct_request))
         end
 
         render text: response.to_json, layout: false
@@ -50,42 +87,32 @@ module Netzke
 
     protected
 
-      def direct_response(request_params, endpoint_response)
-        path, action, params, tid = parse_request_params(request_params)
-        component_name, *sub_components = path.split('__')
+      def direct_response(request, endpoint_response)
+        component_name, *sub_components = request.cmp_path.split('__')
 
         # We render text/plain, so that the browser never modifies our response
         response.headers["Content-Type"] = "text/plain; charset=utf-8"
 
         { type: :rpc,
-          tid: tid,
+          tid: request.tid,
           action: component_name,
-          method: action,
+          method: request.endpoint,
           result: ActiveSupport::JSON::Variable.new(endpoint_response.netzke_jsonify.to_json)
         }
       end
 
-      def invoke_endpoint(request_params)
-        path, action, params, tid = parse_request_params(request_params)
-
-        component_name, *sub_components = path.split('__')
+      def invoke_endpoint(request)
+        component_name, *sub_components = request.cmp_path.split('__')
         components_in_session = session[:netzke_components]
 
         if components_in_session
-          component_instance = Netzke::Base.instance_by_config(components_in_session[component_name.to_sym])
-          component_instance.invoke_endpoint((sub_components + [action]).join("__"), params)
+          cmp_config = components_in_session[component_name.to_sym]
+          cmp_config[:client_config] = request.client_configs.shift || {}
+          component_instance = Netzke::Base.instance_by_config(cmp_config)
+          component_instance.invoke_endpoint((sub_components + [request.endpoint]).join("__"), request.args, request.client_configs)
         else
           {netzke_session_expired: []}
         end
-      end
-
-      def parse_request_params(params)
-        path = params[:path]
-        endpoint = params[:endpoint].underscore
-        ep_params = params[:data].try(:first) # Rails >= 3.2.11 returns nil in request_params[:data]
-        tid = params[:tid]
-
-        [path, endpoint, ep_params, tid]
       end
 
       # The dispatcher for the old-style requests (used for multi-part form submission). The URL contains the name of the component,
@@ -95,7 +122,8 @@ module Netzke
         component_name, *sub_components = endpoint_path.split('__')
         component_instance = Netzke::Base.instance_by_config(session[:netzke_components][component_name.to_sym])
 
-        # We can't do this here; this method is only used for classic form submission, and the response from the server should be the (default) "text/html"
+        # We can't do this here; this method is only used for classic form submission, and the response from the server
+        # should be the (default) "text/html"
         # response.headers["Content-Type"] = "text/plain; charset=utf-8"
 
         render :text => component_instance.invoke_endpoint(sub_components.join("__"), params).netzke_jsonify.to_json, :layout => false

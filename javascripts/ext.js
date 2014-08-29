@@ -9,7 +9,7 @@ Ext.QuickTips.init();
 // Checking Ext JS version: both major and minor versions must be the same
 (function(){
   var requiredVersionMajor = 4,
-      requiredVersionMinor = 1,
+      requiredVersionMinor = 2,
       extVersion = Ext.getVersion('extjs'),
       currentVersionMajor = extVersion.getMajor(),
       currentVersionMinor = extVersion.getMinor(),
@@ -79,13 +79,14 @@ Ext.define('Netzke.classes.NetzkeRemotingProvider', {
     }
   },
 
-  addEndpointsForComponent: function(componentPath, endpoints) {
-    var cls = this.namespace[componentPath] || (this.namespace[componentPath] = {});
+  addEndpointsForComponent: function(componentPath, componentId, endpoints) {
+    var cls = this.namespace[componentId] || (this.namespace[componentId] = {});
 
     Ext.Array.each(endpoints, function(ep) {
       var methodName = ep.camelize(true),
           method = Ext.create('Ext.direct.RemotingMethod', {name: methodName, len: 1});
-      cls[methodName] = this.createHandler(componentPath, method);
+
+        cls[methodName] = this.createHandler(componentPath, method);
     }, this);
   },
 
@@ -116,6 +117,8 @@ Ext.define(null, {
   override: 'Ext.Component',
   constructor: function(config) {
     if (this.isNetzke) {
+      // component loading index
+      this.netzkeLoadingIndex = 0;
 
       this.netzkeComponents = config.netzkeComponents;
       this.passedConfig = config;
@@ -175,7 +178,7 @@ Ext.define(null, {
     var endpoints = config.endpoints || [];
     endpoints.push('deliver_component'); // all Netzke components get this endpoint
 
-    Netzke.directProvider.addEndpointsForComponent(config.id, endpoints);
+    Netzke.directProvider.addEndpointsForComponent(config.path, config.id, endpoints);
 
     var that = this;
 
@@ -183,18 +186,24 @@ Ext.define(null, {
       var methodName = ep.camelize(true);
 
       /* add endpoint method to `this` */
-      this[methodName] = function(arg, callback, scope) {
+      this[methodName] = function(args, callback, scope) {
         Netzke.runningRequests++;
 
         scope = scope || that;
 
-        Netzke.providers[config.id][methodName].call(scope, arg, function(result, e) {
-          if (Ext.getClass(e) == Ext.direct.RemotingEvent) { // means we didn't get an exception, which is handled elsewhere
-            that.netzkeBulkExecute(result); // invoke the endpoint result on the calling component
+        var cfgs = this.buildParentClientConfigs();
+        var remotingArgs = {args: args, configs: cfgs};
 
-            if (typeof callback == "function" && !scope.netzkeSessionIsExpired) {
-              callback.call(scope, that.latestResult); // invoke the callback on the provided scope, or on the calling component if no scope set. Pass latestResult to callback
-            }
+        Netzke.providers[config.id][methodName].call(scope, remotingArgs, function(result, e) {
+          var callbackParam = e;
+
+          if (Ext.getClass(e) == Ext.direct.RemotingEvent) { // means we didn't get an exception
+            that.netzkeBulkExecute(result); // invoke the endpoint result on the calling component
+            callbackParam = that.latestResult;
+          }
+
+          if (typeof callback == "function" && !scope.netzkeSessionIsExpired) {
+            callback.call(scope, callbackParam); // invoke the callback on the provided scope, or on the calling component if no scope set. Pass latestResult to callback in case of success, or the Ext.direct.ExceptionEvent otherwise
           }
 
           Netzke.runningRequests--;
@@ -203,6 +212,25 @@ Ext.define(null, {
     }, this);
 
     delete config.endpoints;
+  },
+
+  /**
+   * Array of client configs for each parent down the tree
+   * @private
+   */
+  buildParentClientConfigs: function() {
+    if (!this._parentClientConfig) {
+      this._parentClientConfig = [];
+      var parent = this;
+      while (parent) {
+        var cfg = parent.clientConfig || {};
+        cfg.id = parent.id;
+        this._parentClientConfig.unshift(cfg);
+        parent = parent.netzkeGetParentComponent();
+      }
+    }
+
+    return this._parentClientConfig;
   },
 
   /**
@@ -258,6 +286,7 @@ Ext.define(null, {
    * @param {Object} config Can contain the following keys:
    *   'container' - if specified, the instance (or id) of a panel with the 'fit' layout where the loaded component will be added to; the previously existing component will be destroyed
    *   'append' - if set to +true+, do not clear the container before adding the loaded component
+   *   'clone' - if set to +true+, allows loading multiple instances of the same child component
    *   'callback' - function that gets called after the component is loaded; it receives the component's instance as parameter
    *   'configOnly' - if set to +true+, do not instantiate the component, instead pass its config to the callback function
    *   'params' - object passed to the endpoint, may be useful for extra configuration
@@ -280,6 +309,7 @@ Ext.define(null, {
   netzkeLoadComponent: function(){
     var params;
 
+    // support 2 different signatures
     if (Ext.isString(arguments[0])) {
       params = arguments[1] || {};
       params.name = arguments[0];
@@ -290,14 +320,26 @@ Ext.define(null, {
     if (params.container == undefined) params.container = this;
     params.name = params.name.underscore();
 
-    // params that will be provided for the server API call (deliver_component); all what's passed in params.params is merged in. This way we exclude from sending along such things as :scope, :callback, etc.
+    /* params that will be provided for the server API call (deliver_component); all what's passed in params.params is
+    * merged in. This way we exclude from sending along such things as :scope and :callback */
     var serverParams = params.params || {};
-    serverParams.name = params.name;
+    serverParams["name"] = params.name;
+    serverParams["client_config"] = params.clientConfig;
+
+    // by which the loaded component will be referred in +netzkeComponentDelivered+
+    var itemId = params.name;
+
+    // multi-instance loading
+    if (params.clone) {
+      serverParams["index"] = this.netzkeLoadingIndex;
+      itemId += this.netzkeLoadingIndex; // << index
+      this.netzkeLoadingIndex++;
+    }
 
     // coma-separated list of xtypes of already loaded classes
-    serverParams.cache = Netzke.cache.join();
+    serverParams["cache"] = Netzke.cache.join();
 
-    var storedConfig = this.componentsBeingLoaded[params.name] = params;
+    var storedConfig = this.componentsBeingLoaded[itemId] = params;
 
     // Remember where the loaded component should be inserted into
     var containerCmp = params.container && Ext.isString(params.container) ? Ext.getCmp(params.container) : params.container;
@@ -310,8 +352,12 @@ Ext.define(null, {
       storedConfig.loadMaskCmp.show();
     }
 
-    // do the remote API call
-    this.deliverComponent(serverParams);
+    // Call the endpoint
+    this.deliverComponent(serverParams, function(e) {
+      if (Ext.getClass(e) == Ext.direct.ExceptionEvent) {
+        this.netzkeUndoLoadingComponent(params.name);
+      }
+    }, this);
   },
 
   /**
@@ -319,15 +365,8 @@ Ext.define(null, {
    * @private
   */
   netzkeComponentDelivered: function(config){
-    // retrieve the loading config for this component
-    var storedConfig = this.componentsBeingLoaded[config.name] || {};
-    var callbackParam;
-    delete this.componentsBeingLoaded[config.name];
-
-    if (storedConfig.loadMaskCmp) {
-      storedConfig.loadMaskCmp.hide();
-      storedConfig.loadMaskCmp.destroy();
-    }
+    var storedConfig = this.netzkeUndoLoadingComponent(config.itemId),
+        callbackParam;
 
     if (storedConfig.configOnly) {
       callbackParam = config;
@@ -356,11 +395,27 @@ Ext.define(null, {
   },
 
   /**
+   * Destroys the loading mask and removes the component from componentsBeingLoaded
+   * @private
+   */
+  netzkeUndoLoadingComponent: function(itemId) {
+    var storedConfig = this.componentsBeingLoaded[itemId] || {};
+    delete this.componentsBeingLoaded[itemId];
+
+    if (storedConfig.loadMaskCmp) {
+      storedConfig.loadMaskCmp.hide();
+      storedConfig.loadMaskCmp.destroy();
+    }
+
+    return storedConfig;
+  },
+
+  /**
    * @private
    */
   netzkeComponentDeliveryFailed: function(params) {
-    var storedConfig = this.componentsBeingLoaded[params.componentName] || {};
-    delete this.componentsBeingLoaded[params.componentName];
+    var storedConfig = this.componentsBeingLoaded[params.itemId] || {};
+    delete this.componentsBeingLoaded[params.itemId];
 
     if (storedConfig.loadMaskCmp) {
       storedConfig.loadMaskCmp.hide();
@@ -379,7 +434,8 @@ Ext.define(null, {
     idSplit.pop();
     var parentId = idSplit.join("__");
 
-    return parentId === "" ? null : Ext.getCmp(parentId);
+    var res = parentId === "" ? null : Ext.getCmp(parentId);
+    return res;
   },
 
   /**
@@ -403,7 +459,8 @@ Ext.define(null, {
   */
   netzkeInstantiateComponent: function(name) {
     name = name.camelize(true);
-    return Ext.createByAlias(this.netzkeComponents[name].alias, this.netzkeComponents[name])
+    var cfg = this.netzkeComponents[name];
+    return Ext.createByAlias(this.netzkeComponents[name].alias, cfg)
   },
 
   /**
@@ -413,39 +470,36 @@ Ext.define(null, {
   netzkeGetComponent: function(id){
     if (id === "") {return this};
     id = id.underscore();
-    var split = id.split("__");
+    var split = id.split("__"), res;
     if (split[0] === 'parent') {
       split.shift();
       var childInParentScope = split.join("__");
-      return this.netzkeGetParentComponent().netzkeGetComponent(childInParentScope);
+      res = this.netzkeGetParentComponent().netzkeGetComponent(childInParentScope);
     } else {
-      return Ext.getCmp(this.id+"__"+id);
+      res = Ext.getCmp(this.id+"__"+id);
     }
+    return res;
   },
 
   /**
   * Provides a visual feedback. TODO: refactor
+  * msg can be a string, an array of strings, an object in form {msg: 'Message'}, or an array of such objects.
   */
   netzkeFeedback: function(msg, options){
     if (this.initialConfig && this.initialConfig.quiet) return false;
 
     options = options || {};
 
-    if (this.feedbackGhost) {
-      this.feedbackGhost.showFeedback(msg, {delay: options.delay});
-    } else {
-      // there's no application to show the feedback - so, we do it ourselves
-      if (typeof msg == 'string'){
-        alert(msg);
-      } else {
-        var compoundResponse = "";
-        Ext.each(msg, function(m){
-          compoundResponse += m.msg + "\n"
-        });
-        if (compoundResponse != "") {
-          alert(compoundResponse);
-        }
-      }
+    if (typeof msg == 'string'){ msg = [msg]; }
+
+    var feedback = "";
+
+    Ext.each(msg, function(m){
+      feedback += m.msg || m + "<br/>"
+    });
+
+    if (feedback != "") {
+      this.feedbackGhost.showFeedback(feedback, {delay: options.delay});
     }
   },
 
