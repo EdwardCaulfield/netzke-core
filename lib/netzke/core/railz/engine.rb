@@ -9,7 +9,7 @@ module Netzke
       # before loading initializers
       config.before_initialize do |app|
         Netzke::Core.ext_path = Rails.root.join('public', Netzke::Core.ext_uri[1..-1])
-        Netzke::Core.with_icons = File.exists?("#{::Rails.root}/public#{Netzke::Core.icons_uri}") if Netzke::Core.with_icons.nil?
+        Netzke::Core.with_icons = File.exist?("#{::Rails.root}/public#{Netzke::Core.icons_uri}") if Netzke::Core.with_icons.nil?
       end
     end
   end
